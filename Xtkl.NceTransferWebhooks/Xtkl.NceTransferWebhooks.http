@@ -1,0 +1,6 @@
+@Xtkl.NceTransferWebhooks_HostAddress = http://localhost:5020
+
+GET {{Xtkl.NceTransferWebhooks_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
