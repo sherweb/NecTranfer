@@ -1,65 +1,60 @@
-using System.Net.Mail;
+using SendGrid;
+using SendGrid.Helpers.Mail;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure logging to capture detailed logs
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.SetMinimumLevel(LogLevel.Debug);
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 app.UseSwagger();
 app.UseSwaggerUI();
 
 app.UseHttpsRedirection();
 
-
-app.MapPost("/transfer-completed", async (CompleteTransferDto request) =>
+app.MapPost("/transfer-completed", async (CompleteTransferDto request, IConfiguration config) =>
     {
+        var apiKey = config["SendGrid:ApiKey"];
+        var fromEmail = config["SendGrid:FromEmail"];
+        var fromName = config["SendGrid:FromName"];
+        var toEmail = config["SendGrid:ToEmail"];
+        var toName = config["SendGrid:ToName"];
+
+        var client = new SendGridClient(apiKey);
+        var from = new EmailAddress(fromEmail, fromName);
+        var subject = "NCE Transfer Completed";
+        var to = new EmailAddress(toEmail, toName);
+
+        var htmlContent = $@"
+                <html>
+                <body>
+                    <p>Team,</p>
+                    <p>We would like to inform you that the NCE transfer process has been successfully completed. Please find the details below:</p>
+
+                    <ul style='list-style-type:none; padding: 0;'>
+                        <li><strong>Resource URI:</strong> {request.ResourceUri}</li>
+                        <li><strong>Date of Change (UTC):</strong> {request.ResourceChangeUtcDate.ToString("u")}</li>
+                    </ul>
+
+                    <p>If you have any questions or need further assistance, please don’t hesitate to reach out.</p>
+
+                    <p>Best regards,<br/>
+                    <strong>Sherweb Support Team</strong>
+                </body>
+                </html>";
+
+        var msg = MailHelper.CreateSingleEmail(from, to, subject, null, htmlContent);
+
         try
         {
-            //var smtpClient = new SmtpClient("smtp.gmail.com")
-            //{
-            //    Port = 587,
-            //    Credentials = new System.Net.NetworkCredential("alessandro.developer.santos@gmail.com", "ylmsnhumxxnumurn"),
-            //    EnableSsl = true,
-            //};
+            var response = await client.SendEmailAsync(msg);
 
-            //var mailMessage = new MailMessage
-            //{
-            //    From = new MailAddress("alessandro.developer.santos@gmail.com", "Sherweb"),
-            //    Subject = "NCE Transfer Completed",
-            //    IsBodyHtml = true,
-            //    Body = $@"
-            //    <html>
-            //    <body>
-            //        <p>Team,</p>
-            //        <p>We would like to inform you that the NCE transfer process has been successfully completed. Please find the details below:</p>
-
-            //        <ul style='list-style-type:none; padding: 0;'>
-            //            <li><strong>Resource URI:</strong> {request.ResourceUri}</li>
-            //            <li><strong>Date of Change (UTC):</strong> {request.ResourceChangeUtcDate.ToString("u")}</li>
-            //        </ul>
-
-            //        <p>If you have any questions or need further assistance, please don’t hesitate to reach out.</p>
-
-            //        <p>Best regards,<br/>
-            //        <strong>Sherweb Support Team</strong>
-            //    </body>
-            //    </html>"
-            //};
-
-            //mailMessage.To.Add("asantos@sherweb.com");
-
-            //await smtpClient.SendMailAsync(mailMessage);
-            return Results.Ok("Request received.");
+            return response.IsSuccessStatusCode ? Results.Ok("Email sent successfully.") : Results.Problem("Error sending email.");
         }
         catch (Exception ex)
         {
