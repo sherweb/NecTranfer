@@ -1,11 +1,13 @@
-using SendGrid;
 using SendGrid.Helpers.Mail;
+using SendGrid;
+using System.Text;
+using JsonSerializer = System.Text.Json.JsonSerializer;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
-builder.Logging.SetMinimumLevel(LogLevel.Debug);
+//builder.Logging.SetMinimumLevel(LogLevel.Debug);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -25,12 +27,14 @@ app.MapPost("/transfer-completed", async (CompleteTransferDto request, IConfigur
         var toEmail = config["SendGrid:ToEmail"];
         var toName = config["SendGrid:ToName"];
 
-        var client = new SendGridClient(apiKey);
-        var from = new EmailAddress(fromEmail, fromName);
-        var subject = "NCE Transfer Completed";
-        var to = new EmailAddress(toEmail, toName);
+        try
+        {
+            var client = new SendGridClient(apiKey);
+            var from = new EmailAddress(fromEmail, fromName);
+            var subject = "NCE Transfer Completed";
+            var to = new EmailAddress(toEmail, toName);
 
-        var htmlContent = $@"
+            var htmlContent = $@"
                 <html>
                 <body>
                     <p>Team,</p>
@@ -48,13 +52,21 @@ app.MapPost("/transfer-completed", async (CompleteTransferDto request, IConfigur
                 </body>
                 </html>";
 
-        var msg = MailHelper.CreateSingleEmail(from, to, subject, null, htmlContent);
+            var msg = MailHelper.CreateSingleEmail(from, to, subject, null, htmlContent);
 
-        try
-        {
-            var response = await client.SendEmailAsync(msg);
+            await client.SendEmailAsync(msg);
 
-            return response.IsSuccessStatusCode ? Results.Ok("Email sent successfully.") : Results.Problem("Error sending email.");
+            var httpClient = new HttpClient();
+
+            var jsonContent = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+
+            var endpointUrl = "https://prod-15.canadacentral.logic.azure.com:443/workflows/3250236be48d4b069d080a5330250daf/triggers/manual/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=zFc34-bcFhnnwPF-KttUgZZRIbh7RZT95_smn5MHrcw";
+
+            var httpResponse = await httpClient.PostAsync(endpointUrl, jsonContent);
+
+            return httpResponse.IsSuccessStatusCode
+                    ? Results.Ok("Notification sent successfully.")
+                    : Results.Problem("Error sending data to external endpoint.");
         }
         catch (Exception ex)
         {
