@@ -40,6 +40,8 @@ app.MapPost("/transfer-completed-us", async (CompleteTransferDto request, IConfi
                     <p>Team,</p>
                     <p>We would like to inform you that the NCE transfer process has been successfully completed. Please find the details below:</p>
 
+                    <p>{JsonSerializer.Serialize(request)}</p>
+
                     <ul style='list-style-type:none; padding: 0;'>
                         <li><strong>Resource URI:</strong> {request.ResourceUri}</li>
                         <li><strong>Date of Change (UTC):</strong> {request.ResourceChangeUtcDate.ToString("u")}</li>
