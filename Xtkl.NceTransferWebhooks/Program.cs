@@ -267,9 +267,9 @@ async Task SendEmail(Transfer transfer, TenantRegion region, IConfiguration conf
                             <li><strong>Customer Name:</strong> {transfer.customerName}</li>
                             <li><strong>Source Partner Name:</strong> {transfer.sourcePartnerName}</li>
                             <li><strong>Target Partner Name:</strong> {transfer.targetPartnerName}</li>
-                            <li><strong>Created Time: {transfer.createdTime}</strong>
-                            <li><strong>Complete Time: {transfer.completedTime}</strong>
-                            <li><strong>Expired Time: {transfer.expirationTime}</strong>
+                            <li><strong>Created Time:</strong> {transfer.createdTime}</li>
+                            <li><strong>Complete Time:</strong> {transfer.completedTime}</li>
+                            <li><strong>Expired Time:</strong> {transfer.expirationTime}</li>
                         </ul>
 
                         <p>If you have any questions or need further assistance, please don’t hesitate to reach out.</p>
