@@ -1,7 +1,15 @@
 using SendGrid.Helpers.Mail;
 using SendGrid;
 using System.Text;
-using JsonSerializer = System.Text.Json.JsonSerializer;
+using Swashbuckle.AspNetCore.Annotations;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Store.PartnerCenter;
+using Microsoft.Store.PartnerCenter.Extensions;
+using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Xtkl.NceTransferWebhooks.DTOs;
+using Xtkl.NceTransferWebhooks.Model;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,7 +18,15 @@ builder.Logging.AddConsole();
 builder.Logging.SetMinimumLevel(LogLevel.Debug);
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.EnableAnnotations();
+});
+
+builder.Services.Configure<JsonOptions>(options =>
+{
+    options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 
 var app = builder.Build();
 
@@ -19,7 +35,141 @@ app.UseSwaggerUI();
 
 app.UseHttpsRedirection();
 
-app.MapPost("/transfer-completed-us", async (CompleteTransferDto request, IConfiguration config) =>
+app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration config) =>
+    {
+        var partnerCredentials = GetPartnerCredentials(request.TenantRegion, config);
+
+        try
+        {
+            var httpClient = new HttpClient();
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", partnerCredentials.Credentials.PartnerServiceToken);
+            httpClient.BaseAddress = new Uri(config["Transfer:PartnerCenterUrl"]);
+
+            var TransferRequest = new
+            {
+                request.SourcePartnerTenantId,
+                request.SourcePartnerName,
+                request.CustomerEmailId,
+                request.CustomerName,
+                //request.TargetPartnerTenantId,
+                //request.TargetPartnerEmailId,
+                TransferType = "3" // 3 represents NewCommerce and should be used for Azure plan and new commerce license-based subscriptions.
+            };
+
+            var content = new StringContent(JsonSerializer.Serialize(TransferRequest), Encoding.UTF8, "application/json");
+
+            var response = await httpClient.PostAsync($"v1/customers/{request.CustomerId}/transfers", content);
+
+            return response.IsSuccessStatusCode
+                ? Results.Ok("Request created successfully.")
+                : Results.Problem(
+                    detail: "Error sending data to external endpoint.",
+                    statusCode: (int)response.StatusCode
+                );
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem("Internal server error - unexpected error occurred");
+        }
+    })
+    .WithName("CreateTransfer")
+    .WithMetadata(new SwaggerOperationAttribute(
+        summary: "Creates a new NCE transfer request",
+        description: "This endpoint creates a transfer request for a customer's subscription between partners."
+    ))
+    .WithMetadata(new SwaggerResponseAttribute(200, "Request created successfully"))
+    .WithMetadata(new SwaggerResponseAttribute(400, "Bad request - invalid or missing data"))
+    .WithMetadata(new SwaggerResponseAttribute(404, "Not found - customer or partner ID does not exist"))
+    .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
+    .WithOpenApi();
+
+app.MapPost("/transfer-completed-us", async (TransferWebhookDto request, IConfiguration config) =>
+    {
+        try
+        {
+            var transfer = await GetTransfer(request.AuditUri, TransferStatus.Complete, TenantRegion.US, config);
+
+            await SendEmail(transfer, TenantRegion.US, config);
+
+            return await SendToCumulus(transfer, config);
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem($"Error: {ex.Message}");
+        }
+    })
+    .WithName("TransferCompletedUsa")
+    .WithOpenApi();
+
+app.MapPost("/transfer-completed-ca", async (TransferWebhookDto request, IConfiguration config) =>
+{
+    try
+    {
+        var transfer = await GetTransfer(request.AuditUri, TransferStatus.Complete, TenantRegion.CA, config);
+
+        await SendEmail(transfer, TenantRegion.CA, config);
+
+        return await SendToCumulus(transfer, config);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"Error: {ex.Message}");
+    }
+})
+    .WithName("TransferCompletedCanada")
+    .WithOpenApi();
+
+app.MapPost("/transfer-failed-ca", async (TransferWebhookDto request, IConfiguration config) =>
+    {
+        var apiKey = config["SendGrid:ApiKey"];
+        var fromEmail = config["SendGrid:FromEmail"];
+        var fromName = config["SendGrid:FromName"];
+        var toEmail = config["SendGrid:ToEmail"];
+        var toName = config["SendGrid:ToName"];
+
+        try
+        {
+            var client = new SendGridClient(apiKey);
+            var from = new EmailAddress(fromEmail, fromName);
+            var subject = "NCE Transfer Completed - CA";
+            var to = new EmailAddress(toEmail, toName);
+
+            var htmlContent = $@"
+                <html>
+                <body>
+                    <p>Team,</p>
+                    <p>We would like to inform you that the NCE transfer process has been successfully completed. Please find the details below:</p>
+
+                    <p>{JsonSerializer.Serialize(request)}</p>
+
+                    <ul style='list-style-type:none; padding: 0;'>
+                        <li><strong>Resource URI:</strong> {request.ResourceUri}</li>
+                        <li><strong>Date of Change (UTC):</strong> {request.ResourceChangeUtcDate.ToString("u")}</li>
+                    </ul>
+
+                    <p>If you have any questions or need further assistance, please don’t hesitate to reach out.</p>
+
+                    <p>Best regards,<br/>
+                    <strong>Sherweb Support Team</strong>
+                </body>
+                </html>";
+
+            var msg = MailHelper.CreateSingleEmail(from, to, subject, null, htmlContent);
+
+            await client.SendEmailAsync(msg);
+
+            return Results.Ok("Notification sent successfully.");
+
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem($"Error: {ex.Message}");
+        }
+    })
+    .WithName("TransferFailedCanada")
+    .WithOpenApi();
+
+app.MapPost("/transfer-failed-us", async (TransferWebhookDto request, IConfiguration config) =>
     {
         var apiKey = config["SendGrid:ApiKey"];
         var fromEmail = config["SendGrid:FromEmail"];
@@ -58,27 +208,41 @@ app.MapPost("/transfer-completed-us", async (CompleteTransferDto request, IConfi
 
             await client.SendEmailAsync(msg);
 
-            var httpClient = new HttpClient();
+            return Results.Ok("Notification sent successfully.");
 
-            var jsonContent = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
-
-            var endpointUrl = config["Transfer:CumulusEndpoint"];
-
-            var httpResponse = await httpClient.PostAsync(endpointUrl, jsonContent);
-
-            return httpResponse.IsSuccessStatusCode
-                    ? Results.Ok("Notification sent successfully.")
-                    : Results.Problem("Error sending data to external endpoint.");
         }
         catch (Exception ex)
         {
-            return Results.Problem($"Error sending email: {ex.Message}");
+            return Results.Problem($"Error: {ex.Message}");
         }
     })
-    .WithName("TransferCompletedUsa")
+    .WithName("TransferFailedUsa")
     .WithOpenApi();
 
-app.MapPost("/transfer-completed-ca", async (CompleteTransferDto request, IConfiguration config) =>
+app.Run();
+
+#region Private
+async Task<Transfer> GetTransfer(string url, TransferStatus status, TenantRegion region, IConfiguration config)
+{
+    var partnerCredentials = GetPartnerCredentials(region, config);
+
+    var httpClient = new HttpClient();
+    httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", partnerCredentials.Credentials.PartnerServiceToken);
+    httpClient.BaseAddress = new Uri(config["Transfer:PartnerCenterUrl"]);
+
+    var parts = url.Split('_');
+
+    var customerId = parts.GetValue(1).ToString();
+    var transferId = parts.GetValue(2).ToString();
+
+    var response = await httpClient.GetAsync($"v1/customers/{customerId}/transfers/{transferId}");
+
+    var result = await response.Content.ReadAsStringAsync();
+
+    return JsonSerializer.Deserialize<Transfer>(result);
+}
+
+async Task SendEmail(Transfer transfer, TenantRegion region, IConfiguration config)
 {
     var apiKey = config["SendGrid:ApiKey"];
     var fromEmail = config["SendGrid:FromEmail"];
@@ -86,55 +250,70 @@ app.MapPost("/transfer-completed-ca", async (CompleteTransferDto request, IConfi
     var toEmail = config["SendGrid:ToEmail"];
     var toName = config["SendGrid:ToName"];
 
-    try
+    var client = new SendGridClient(apiKey);
+    var from = new EmailAddress(fromEmail, fromName);
+    var subject = $"NCE Transfer Completed - {region.ToString()}";
+    var to = new EmailAddress(toEmail, toName);
+
+    var htmlContent = $@"
+                    <html>
+                    <body>
+                        <p>Team,</p>
+                        <p>We would like to inform you that the NCE transfer process has been successfully completed. Please find the details below:</p>
+
+                        <ul style='list-style-type:none; padding: 0;'>
+                            <li><strong>Transfer ID:</strong> {transfer.id}</li>
+                            <li><strong>Customer ID:</strong> {transfer.customerTenantId}</li>
+                            <li><strong>Customer Name:</strong> {transfer.customerName}</li>
+                            <li><strong>Source Partner Name:</strong> {transfer.sourcePartnerName}</li>
+                            <li><strong>Target Partner Name:</strong> {transfer.targetPartnerName}</li>
+                            <li><strong>Created Time: {transfer.createdTime}</strong>
+                            <li><strong>Complete Time: {transfer.completedTime}</strong>
+                            <li><strong>Expired Time: {transfer.expirationTime}</strong>
+                        </ul>
+
+                        <p>If you have any questions or need further assistance, please don’t hesitate to reach out.</p>
+
+                        <p>Best regards,<br/>
+                        <strong>Sherweb Support Team</strong>
+                    </body>
+                    </html>";
+
+    var msg = MailHelper.CreateSingleEmail(from, to, subject, null, htmlContent);
+
+    await client.SendEmailAsync(msg);
+}
+
+IAggregatePartner GetPartnerCredentials(TenantRegion region, IConfiguration config)
+{
+    var regionKey = region.ToString();
+
+    var clientId = config[$"Transfer:TenantRegion:{regionKey}:ClientId"];
+    var appSecret = config[$"Transfer:TenantRegion:{regionKey}:AppSecret"];
+    var appDomain = config[$"Transfer:TenantRegion:{regionKey}:AppDomain"];
+
+    if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(appSecret) || string.IsNullOrEmpty(appDomain))
     {
-        var client = new SendGridClient(apiKey);
-        var from = new EmailAddress(fromEmail, fromName);
-        var subject = "NCE Transfer Completed - CA";
-        var to = new EmailAddress(toEmail, toName);
-
-        var htmlContent = $@"
-                <html>
-                <body>
-                    <p>Team,</p>
-                    <p>We would like to inform you that the NCE transfer process has been successfully completed. Please find the details below:</p>
-
-                    <ul style='list-style-type:none; padding: 0;'>
-                        <li><strong>Resource URI:</strong> {request.ResourceUri}</li>
-                        <li><strong>Date of Change (UTC):</strong> {request.ResourceChangeUtcDate.ToString("u")}</li>
-                    </ul>
-
-                    <p>If you have any questions or need further assistance, please don’t hesitate to reach out.</p>
-
-                    <p>Best regards,<br/>
-                    <strong>Sherweb Support Team</strong>
-                </body>
-                </html>";
-
-        var msg = MailHelper.CreateSingleEmail(from, to, subject, null, htmlContent);
-
-        await client.SendEmailAsync(msg);
-
-        var httpClient = new HttpClient();
-
-        var jsonContent = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
-
-        var endpointUrl = config["Transfer:CumulusEndpoint"];
-
-        var httpResponse = await httpClient.PostAsync(endpointUrl, jsonContent);
-
-        return httpResponse.IsSuccessStatusCode
-                ? Results.Ok("Notification sent successfully.")
-                : Results.Problem("Error sending data to external endpoint.");
+        throw new InvalidOperationException($"Missing configuration for region '{regionKey}'. Ensure that all credentials are provided.");
     }
-    catch (Exception ex)
-    {
-        return Results.Problem($"Error sending email: {ex.Message}");
-    }
-})
-    .WithName("TransferCompletedCanada")
-    .WithOpenApi();
 
-app.Run();
+    IPartnerCredentials partnerCredentials = PartnerCredentials.Instance.GenerateByApplicationCredentials(clientId, appSecret, appDomain);
 
-internal record CompleteTransferDto(string EventName, string ResourceUri, string ResourceName, string AuditUri, DateTime ResourceChangeUtcDate);
+    return PartnerService.Instance.CreatePartnerOperations(partnerCredentials);
+}
+
+async Task<IResult> SendToCumulus(Transfer transfer, IConfiguration configuration)
+{
+    var httpClient = new HttpClient();
+
+    var jsonContent = new StringContent(JsonSerializer.Serialize(transfer), Encoding.UTF8, "application/json");
+
+    var endpointUrl = configuration["Transfer:CumulusEndpoint"];
+
+    var httpResponse = await httpClient.PostAsync(endpointUrl, jsonContent);
+
+    return httpResponse.IsSuccessStatusCode
+        ? Results.Ok("Notification sent successfully.")
+        : Results.Problem("Error sending data to external endpoint.");
+}
+#endregion
