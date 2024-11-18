@@ -11,9 +11,6 @@ using System.Text.Json.Serialization;
 using Xtkl.NceTransferWebhooks.DTOs;
 using Xtkl.NceTransferWebhooks.Model;
 
-const string EVENT_COMPLETE_TRANSFER = "complete-transfer";
-const string EVENT_FAIL_TRANSFER = "fail-transfer";
-
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
@@ -208,6 +205,12 @@ IAggregatePartner GetPartnerCredentials(TenantRegion region, IConfiguration conf
 
 async Task<IResult> SendToCumulus(Transfer transfer, IConfiguration configuration)
 {
+    if (!transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase) &&
+        !transfer.status.Equals(TransferStatus.Expired.ToString(), StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Conflict("The transfer is not in 'Complete' or 'Expired' status and cannot be processed.");
+    }
+
     var httpClient = new HttpClient();
 
     var jsonContent = new StringContent(JsonSerializer.Serialize(transfer), Encoding.UTF8, "application/json");
