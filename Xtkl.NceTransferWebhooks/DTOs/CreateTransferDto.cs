@@ -26,11 +26,12 @@ namespace Xtkl.NceTransferWebhooks.DTOs
         [SwaggerSchema("The email ID of the customer to receive notifications of the transfer creation.")]
         public string CustomerEmailId { get; init; }
 
+        [JsonRequired]
         [SwaggerSchema("The name of the customer whose subscriptions are being transferred.")]
         public string CustomerName { get; init; }
 
         [SwaggerSchema("A GUID formatted partner tenant ID that identifies the partner to whom the transfer is targeted.")]
-        public Guid TargetPartnerTenantId { get; init; }
+        public Guid? TargetPartnerTenantId { get; init; }
 
         [SwaggerSchema("The email ID of the partner to whom the transfer is targeted.")]
         public string TargetPartnerEmailId { get; init; }
