@@ -10,12 +10,15 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Xtkl.NceTransferWebhooks.DTOs;
 using Xtkl.NceTransferWebhooks.Model;
+using Microsoft.Extensions.Caching.Memory;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.SetMinimumLevel(LogLevel.Debug);
+
+builder.Services.AddMemoryCache();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
@@ -35,14 +38,20 @@ app.UseSwaggerUI();
 
 app.UseHttpsRedirection();
 
-app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration config) =>
+app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration config, IMemoryCache memoryCache) =>
     {
-        var partnerCredentials = GetPartnerCredentials(request.TenantRegion, config);
+        if (request.CustomerId == Guid.Empty || request.SourcePartnerTenantId == Guid.Empty ||
+            string.IsNullOrEmpty(request.CustomerEmailId) || string.IsNullOrEmpty(request.SourcePartnerName) || string.IsNullOrEmpty(request.CustomerName))
+        {
+            return Results.Ok("'CustomerId', 'SourcePartnerTenantId', 'SourcePartnerName', 'CustomerName', and 'CustomerEmailId' are required.");
+        }
 
         try
         {
+            var partnerCredentials = await GetPartnerCredentials(request.TenantRegion, config, memoryCache);
+
             var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", partnerCredentials.Credentials.PartnerServiceToken);
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", partnerCredentials.PartnerServiceToken);
             httpClient.BaseAddress = new Uri(config["Transfer:PartnerCenterUrl"]);
 
             var TransferRequest = new
@@ -51,9 +60,9 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
                 request.SourcePartnerName,
                 request.CustomerEmailId,
                 request.CustomerName,
-                //request.TargetPartnerTenantId,
-                //request.TargetPartnerEmailId,
-                TransferType = "3" // 3 represents NewCommerce and should be used for Azure plan and new commerce license-based subscriptions.
+                request.TargetPartnerTenantId,
+                request.TargetPartnerEmailId,
+                TransferType = TransferType.NewCommerce.GetHashCode()
             };
 
             var content = new StringContent(JsonSerializer.Serialize(TransferRequest), Encoding.UTF8, "application/json");
@@ -61,9 +70,9 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
             var response = await httpClient.PostAsync($"v1/customers/{request.CustomerId}/transfers", content);
 
             return response.IsSuccessStatusCode
-                ? Results.Ok("Request created successfully.")
+                ? Results.Ok("Transfer created successfully.")
                 : Results.Problem(
-                    detail: "Error sending data to external endpoint.",
+                    detail: "Internal server error - unexpected error occurred",
                     statusCode: (int)response.StatusCode
                 );
         }
@@ -77,17 +86,16 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
         summary: "Creates a new NCE transfer request",
         description: "This endpoint creates a transfer request for a customer's subscription between partners."
     ))
-    .WithMetadata(new SwaggerResponseAttribute(200, "Request created successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(400, "Bad request - invalid or missing data"))
-    .WithMetadata(new SwaggerResponseAttribute(404, "Not found - customer or partner ID does not exist"))
+    .WithMetadata(new SwaggerResponseAttribute(200, "Transfer created successfully"))
+    .WithMetadata(new SwaggerResponseAttribute(400, "'CustomerId', 'SourcePartnerTenantId', 'SourcePartnerName', 'CustomerName', and 'CustomerEmailId' are required"))
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IConfiguration config) =>
+app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
     {
         try
         {
-            var transfer = await GetTransfer(request.AuditUri, TenantRegion.US, config);
+            var transfer = await GetTransfer(request.AuditUri, TenantRegion.US, config, memoryCache);
 
             await SendEmail(transfer, request.EventName, TenantRegion.US, config);
 
@@ -99,13 +107,20 @@ app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IConfigur
         }
     })
     .WithName("TransferWebhookUsa")
+    .WithMetadata(new SwaggerOperationAttribute(
+        summary: "This event is raised when the transfer is complete",
+        description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the US tenant environment."
+    ))
+    .WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
+    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer is not in 'Complete' or 'Expired' status and cannot be processed."))
+    .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfiguration config) =>
+app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
 {
     try
     {
-        var transfer = await GetTransfer(request.AuditUri, TenantRegion.CA, config);
+        var transfer = await GetTransfer(request.AuditUri, TenantRegion.CA, config, memoryCache);
 
         await SendEmail(transfer, request.EventName, TenantRegion.CA, config);
 
@@ -117,18 +132,25 @@ app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfigur
     }
 })
     .WithName("TransferWebhookCanada")
+    .WithMetadata(new SwaggerOperationAttribute(
+        summary: "This event is raised when the transfer is complete",
+        description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the CA tenant environment."
+    ))
+    .WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
+    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer is not in 'Complete' or 'Expired' status and cannot be processed."))
+    .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
 
 app.Run();
 
 #region Private
-async Task<Transfer> GetTransfer(string url, TenantRegion region, IConfiguration config)
+async Task<Transfer> GetTransfer(string url, TenantRegion region, IConfiguration config, IMemoryCache memoryCache)
 {
-    var partnerCredentials = GetPartnerCredentials(region, config);
+    var partnerCredentials = await GetPartnerCredentials(region, config, memoryCache);
 
     var httpClient = new HttpClient();
-    httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", partnerCredentials.Credentials.PartnerServiceToken);
+    httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", partnerCredentials.PartnerServiceToken);
     httpClient.BaseAddress = new Uri(config["Transfer:PartnerCenterUrl"]);
 
     var parts = url.Split('_');
@@ -142,8 +164,7 @@ async Task<Transfer> GetTransfer(string url, TenantRegion region, IConfiguration
 
     return JsonSerializer.Deserialize<Transfer>(result);
 }
-
-async Task SendEmail(Transfer transfer, string status, TenantRegion region, IConfiguration config)
+async Task SendEmail(Transfer transfer, string eventName, TenantRegion region, IConfiguration config)
 {
     var apiKey = config["SendGrid:ApiKey"];
     var fromEmail = config["SendGrid:FromEmail"];
@@ -153,7 +174,7 @@ async Task SendEmail(Transfer transfer, string status, TenantRegion region, ICon
 
     var client = new SendGridClient(apiKey);
     var from = new EmailAddress(fromEmail, fromName);
-    var subject = $"NCE Transfer {status} - {region.ToString()}";
+    var subject = $"NCE Transfer {eventName} - {region.ToString()}";
     var to = new EmailAddress(toEmail, toName);
 
     var htmlContent = $@"
@@ -171,6 +192,7 @@ async Task SendEmail(Transfer transfer, string status, TenantRegion region, ICon
                             <li><strong>Created Time:</strong> {transfer.createdTime}</li>
                             <li><strong>Complete Time:</strong> {transfer.completedTime}</li>
                             <li><strong>Expired Time:</strong> {transfer.expirationTime}</li>
+                            <li><strong>Status:</strong> {transfer.status}</li>
                         </ul>
 
                         <p>If you have any questions or need further assistance, please don’t hesitate to reach out.</p>
@@ -184,25 +206,6 @@ async Task SendEmail(Transfer transfer, string status, TenantRegion region, ICon
 
     await client.SendEmailAsync(msg);
 }
-
-IAggregatePartner GetPartnerCredentials(TenantRegion region, IConfiguration config)
-{
-    var regionKey = region.ToString();
-
-    var clientId = config[$"Transfer:TenantRegion:{regionKey}:ClientId"];
-    var appSecret = config[$"Transfer:TenantRegion:{regionKey}:AppSecret"];
-    var appDomain = config[$"Transfer:TenantRegion:{regionKey}:AppDomain"];
-
-    if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(appSecret) || string.IsNullOrEmpty(appDomain))
-    {
-        throw new InvalidOperationException($"Missing configuration for region '{regionKey}'. Ensure that all credentials are provided.");
-    }
-
-    IPartnerCredentials partnerCredentials = PartnerCredentials.Instance.GenerateByApplicationCredentials(clientId, appSecret, appDomain);
-
-    return PartnerService.Instance.CreatePartnerOperations(partnerCredentials);
-}
-
 async Task<IResult> SendToCumulus(Transfer transfer, IConfiguration configuration)
 {
     if (!transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase) &&
@@ -220,7 +223,71 @@ async Task<IResult> SendToCumulus(Transfer transfer, IConfiguration configuratio
     var httpResponse = await httpClient.PostAsync(endpointUrl, jsonContent);
 
     return httpResponse.IsSuccessStatusCode
-        ? Results.Ok("Notification sent successfully.")
-        : Results.Problem("Error sending data to external endpoint.");
+        ? Results.Ok("Notification processed successfully")
+        : Results.Problem("Internal server error - unexpected error occurred");
+}
+async Task<IPartnerCredentials> GetPartnerCredentials(TenantRegion region, IConfiguration config, IMemoryCache memoryCache)
+{
+    var regionKey = region.ToString();
+
+    var clientId = config[$"Transfer:TenantRegion:{regionKey}:ClientId"];
+    var appSecret = config[$"Transfer:TenantRegion:{regionKey}:AppSecret"];
+    var tenantId = config[$"Transfer:TenantRegion:{regionKey}:TenantId"];
+    var refreshToken = config[$"Transfer:TenantRegion:{regionKey}:RefreshToken"];
+
+    var loginUrl = config[$"Transfer:ADDLoginUrl"];
+    var scope = config["Transfer:Scope"];
+
+    if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(appSecret) || string.IsNullOrEmpty(tenantId) || string.IsNullOrEmpty(refreshToken))
+    {
+        throw new InvalidOperationException($"Missing configuration for region '{regionKey}'. Ensure that all credentials are provided.");
+    }
+
+    var cacheKey = $"AuthToken_{regionKey}";
+
+    if (memoryCache.TryGetValue<AuthenticationToken>(cacheKey, out var cachedAuthToken) &&
+        cachedAuthToken.ExpiryTime > DateTimeOffset.UtcNow)
+    {
+        return await PartnerCredentials.Instance.GenerateByUserCredentialsAsync(clientId, cachedAuthToken);
+    }
+
+    var postData = new Dictionary<string, string>
+    {
+        { "client_id", clientId },
+        { "scope", scope },
+        { "refresh_token", refreshToken },
+        { "grant_type", "refresh_token" },
+        { "client_secret", appSecret }
+    };
+
+    var url = $"{loginUrl}/{tenantId}/oauth2/token";
+    TokenResponse tokenResponse = null;
+
+    using (var client = new HttpClient())
+    {
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-www-form-urlencoded"));
+
+        var content = new FormUrlEncodedContent(postData);
+        var response = await client.PostAsync(url, content);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException("Error authenticating user.");
+        }
+
+        var responseContent = await response.Content.ReadAsStringAsync();
+        tokenResponse = JsonSerializer.Deserialize<TokenResponse>(responseContent)
+                        ?? throw new InvalidOperationException("Failed to deserialize token response.");
+    }
+
+    var authToken = new AuthenticationToken(
+        tokenResponse.access_token,
+        DateTimeOffset.FromUnixTimeSeconds(Convert.ToInt64(tokenResponse.expires_on))
+    );
+
+    memoryCache.Set(cacheKey, authToken);
+
+    return await PartnerCredentials.Instance.GenerateByUserCredentialsAsync(clientId, authToken);
 }
 #endregion
+
