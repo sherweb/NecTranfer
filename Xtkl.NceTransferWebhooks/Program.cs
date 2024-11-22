@@ -141,6 +141,31 @@ app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfigur
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
+app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
+    {
+        try
+        {
+            var transfer = await GetTransfer(request.AuditUri, TenantRegion.EU, config, memoryCache);
+
+            await SendEmail(transfer, request.EventName, TenantRegion.EU, config);
+
+            return await SendToCumulus(transfer, config);
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem($"Error: {ex.Message}");
+        }
+    })
+    .WithName("TransferWebhookEuropa")
+    .WithMetadata(new SwaggerOperationAttribute(
+        summary: "This event is raised when the transfer is complete",
+        description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the EU tenant environment."
+    ))
+    .WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
+    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer is not in 'Complete' or 'Expired' status and cannot be processed."))
+    .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
+    .WithOpenApi();
+
 
 app.Run();
 
