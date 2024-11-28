@@ -11,10 +11,9 @@ using System.Text.Json.Serialization;
 using Xtkl.NceTransferWebhooks.DTOs;
 using Xtkl.NceTransferWebhooks.Model;
 using Microsoft.Extensions.Caching.Memory;
-using Xtkl.Apps.Legacy.Services.Client.Inspectors;
-using Xtkl.Apps.Legacy.Services.Client;
-using Xtkl.Apps.Legacy.Services.Contracts.AdminPortal;
-using System.Security.Cryptography;
+//using Xtkl.Apps.Legacy.Services.Client.Inspectors;
+//using Xtkl.Apps.Legacy.Services.Client;
+//using Xtkl.Apps.Legacy.Services.Contracts.AdminPortal;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -36,25 +35,25 @@ builder.Services.Configure<JsonOptions>(options =>
     options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
 });
 
-var serviceConfig = builder.Configuration.GetSection("Transfer:ImportService");
+//var serviceConfig = builder.Configuration.GetSection("Transfer:ImportService");
 
-builder.Services.AddScoped<IAdminPortalFacade>(provider =>
-{
-    var identityResolver = provider.GetService<IIdentityResolver>();
-    var correlationResolver = provider.GetService<ICorrelationResolver>();
+//builder.Services.AddScoped<IAdminPortalFacade>(provider =>
+//{
+//    var identityResolver = provider.GetService<IIdentityResolver>();
+//    var correlationResolver = provider.GetService<ICorrelationResolver>();
 
-    var baseUrl = serviceConfig["Url"];
-    var username = serviceConfig["Username"];
-    var password = serviceConfig["Password"];
+//    var baseUrl = serviceConfig["Url"];
+//    var username = serviceConfig["Username"];
+//    var password = serviceConfig["Password"];
 
-    return LegacyServicesFactory.GetAdminPortalFacadeChannel(
-        baseUrl,
-        username,
-        password,
-        identityResolver,
-        correlationResolver
-    );
-});
+//    return LegacyServicesFactory.GetAdminPortalFacadeChannel(
+//        baseUrl,
+//        username,
+//        password,
+//        identityResolver,
+//        correlationResolver
+//    );
+//});
 
 var app = builder.Build();
 
@@ -116,7 +115,7 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IAdminPortalFacade adminFacade, IConfiguration config, IMemoryCache memoryCache) =>
+app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
     {
         try
         {
@@ -149,7 +148,7 @@ app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IAdminPor
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IAdminPortalFacade adminFacade, IConfiguration config, IMemoryCache memoryCache) =>
+app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
 {
     try
     {
@@ -182,7 +181,7 @@ app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IAdminPor
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IAdminPortalFacade adminFacade, IConfiguration config, IMemoryCache memoryCache) =>
+app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
     {
         try
         {
