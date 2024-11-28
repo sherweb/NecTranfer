@@ -16,7 +16,7 @@
         string sourcePartnerTenantId,
         string targetPartnerName,
         string targetPartnerTenantId,
-        string argetPartnerEmailId,
+        string targetPartnerEmailId,
         int transferDirection,
         bool ignoreEligibilityCheck,
         string lastModifiedUser

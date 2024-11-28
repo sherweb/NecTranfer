@@ -12,6 +12,7 @@
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.4.0" />
     <PackageReference Include="Swashbuckle.AspNetCore.Annotations" Version="7.0.0" />
     <PackageReference Include="Microsoft.Store.PartnerCenter" Version="3.4.0" />
+    <PackageReference Include="Xtkl.Apps.Legacy.Services.Client" Version="1.244.2" />
   </ItemGroup>
 
 </Project>

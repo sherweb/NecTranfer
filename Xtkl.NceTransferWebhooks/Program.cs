@@ -11,6 +11,11 @@ using System.Text.Json.Serialization;
 using Xtkl.NceTransferWebhooks.DTOs;
 using Xtkl.NceTransferWebhooks.Model;
 using Microsoft.Extensions.Caching.Memory;
+using Xtkl.Apps.Legacy.Services.Client.Inspectors;
+using Xtkl.Apps.Legacy.Services.Client;
+using Xtkl.Apps.Legacy.Services.Contracts.AdminPortal;
+using System.Security.Cryptography;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -31,6 +36,26 @@ builder.Services.Configure<JsonOptions>(options =>
     options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
 });
 
+var serviceConfig = builder.Configuration.GetSection("Transfer:ImportService");
+
+builder.Services.AddScoped<IAdminPortalFacade>(provider =>
+{
+    var identityResolver = provider.GetService<IIdentityResolver>();
+    var correlationResolver = provider.GetService<ICorrelationResolver>();
+
+    var baseUrl = serviceConfig["Url"];
+    var username = serviceConfig["Username"];
+    var password = serviceConfig["Password"];
+
+    return LegacyServicesFactory.GetAdminPortalFacadeChannel(
+        baseUrl,
+        username,
+        password,
+        identityResolver,
+        correlationResolver
+    );
+});
+
 var app = builder.Build();
 
 app.UseSwagger();
@@ -40,10 +65,11 @@ app.UseHttpsRedirection();
 
 app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration config, IMemoryCache memoryCache) =>
     {
-        if (request.CustomerId == Guid.Empty || request.SourcePartnerTenantId == Guid.Empty ||
-            string.IsNullOrEmpty(request.CustomerEmailId) || string.IsNullOrEmpty(request.SourcePartnerName) || string.IsNullOrEmpty(request.CustomerName))
+        if (request.TenantId == Guid.Empty || request.PartnerId == Guid.Empty || request.CumulusOrgId == Guid.Empty ||
+            string.IsNullOrEmpty(request.CustomerEmail) || string.IsNullOrEmpty(request.PartnerName) ||
+            string.IsNullOrEmpty(request.CustomerName))
         {
-            return Results.Ok("'CustomerId', 'SourcePartnerTenantId', 'SourcePartnerName', 'CustomerName', and 'CustomerEmailId' are required.");
+            return Results.Ok("'TenantId', 'PartnerId', 'PartnerName', 'CustomerName', 'CustomerEmailId', 'CumulusOrgId' are required.");
         }
 
         try
@@ -56,18 +82,17 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
 
             var TransferRequest = new
             {
-                request.SourcePartnerTenantId,
-                request.SourcePartnerName,
-                request.CustomerEmailId,
+                SourcePartnerTenantId = request.PartnerId,
+                SourcePartnerName = request.PartnerName,
+                CustomerEmailId = request.CustomerEmail,
                 request.CustomerName,
-                request.TargetPartnerTenantId,
-                request.TargetPartnerEmailId,
+                TargetPartnerEmailId = request.CumulusOrgId,
                 TransferType = TransferType.NewCommerce.GetHashCode()
             };
 
             var content = new StringContent(JsonSerializer.Serialize(TransferRequest), Encoding.UTF8, "application/json");
 
-            var response = await httpClient.PostAsync($"v1/customers/{request.CustomerId}/transfers", content);
+            var response = await httpClient.PostAsync($"v1/customers/{request.TenantId}/transfers", content);
 
             return response.IsSuccessStatusCode
                 ? Results.Ok("Transfer created successfully.")
@@ -87,17 +112,25 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
         description: "This endpoint creates a transfer request for a customer's subscription between partners."
     ))
     .WithMetadata(new SwaggerResponseAttribute(200, "Transfer created successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(400, "'CustomerId', 'SourcePartnerTenantId', 'SourcePartnerName', 'CustomerName', and 'CustomerEmailId' are required"))
+    .WithMetadata(new SwaggerResponseAttribute(400, "'TenantId', 'PartnerId', 'PartnerName', 'CustomerName', 'CustomerEmailId', and 'CumulusOrgId' are required"))
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
+app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IAdminPortalFacade adminFacade, IConfiguration config, IMemoryCache memoryCache) =>
     {
         try
         {
             var transfer = await GetTransfer(request.AuditUri, TenantRegion.US, config, memoryCache);
 
-            await SendEmail(transfer, request.EventName, TenantRegion.US, config);
+            // TO DO: Refactor it after tests
+            var wasImported = "No";
+            //if (transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase))
+            //{
+            //    var transferResult = adminFacade.ImportMicrosoftTransferInUsingUniqueId(transfer.targetPartnerEmailId);
+            //    wasImported = transferResult.IsSuccess ? "Yes" : "No";
+            //}
+
+            await SendEmail(transfer, request.EventName, wasImported, TenantRegion.US, config);
 
             return await SendToCumulus(transfer, config);
         }
@@ -116,13 +149,21 @@ app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IConfigur
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
+app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IAdminPortalFacade adminFacade, IConfiguration config, IMemoryCache memoryCache) =>
 {
     try
     {
         var transfer = await GetTransfer(request.AuditUri, TenantRegion.CA, config, memoryCache);
 
-        await SendEmail(transfer, request.EventName, TenantRegion.CA, config);
+        // TO DO: Refactor it after tests
+        var wasImported = "No";
+        //if (transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase))
+        //{
+        //    var transferResult = adminFacade.ImportMicrosoftTransferInUsingUniqueId(transfer.targetPartnerEmailId);
+        //    wasImported = transferResult.IsSuccess ? "Yes" : "No";
+        //}
+
+        await SendEmail(transfer, request.EventName, wasImported, TenantRegion.CA, config);
 
         return await SendToCumulus(transfer, config);
     }
@@ -141,13 +182,21 @@ app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfigur
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
+app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IAdminPortalFacade adminFacade, IConfiguration config, IMemoryCache memoryCache) =>
     {
         try
         {
             var transfer = await GetTransfer(request.AuditUri, TenantRegion.EU, config, memoryCache);
 
-            await SendEmail(transfer, request.EventName, TenantRegion.EU, config);
+            // TO DO: Refactor it after tests
+            var wasImported = "No";
+            //if (transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase))
+            //{
+            //    var transferResult = adminFacade.ImportMicrosoftTransferInUsingUniqueId(transfer.targetPartnerEmailId);
+            //    wasImported = transferResult.IsSuccess ? "Yes" : "No";
+            //}
+
+            await SendEmail(transfer, request.EventName, wasImported, TenantRegion.EU, config);
 
             return await SendToCumulus(transfer, config);
         }
@@ -189,7 +238,7 @@ async Task<Transfer> GetTransfer(string url, TenantRegion region, IConfiguration
 
     return JsonSerializer.Deserialize<Transfer>(result);
 }
-async Task SendEmail(Transfer transfer, string eventName, TenantRegion region, IConfiguration config)
+async Task SendEmail(Transfer transfer, string eventName, string imported, TenantRegion region, IConfiguration config)
 {
     var apiKey = config["SendGrid:ApiKey"];
     var fromEmail = config["SendGrid:FromEmail"];
@@ -218,6 +267,7 @@ async Task SendEmail(Transfer transfer, string eventName, TenantRegion region, I
                             <li><strong>Complete Time:</strong> {transfer.completedTime}</li>
                             <li><strong>Expired Time:</strong> {transfer.expirationTime}</li>
                             <li><strong>Status:</strong> {transfer.status}</li>
+                            <li><strong>Was imported:</strong> {imported}</li>
                         </ul>
 
                         <p>If you have any questions or need further assistance, please don’t hesitate to reach out.</p>
@@ -233,8 +283,9 @@ async Task SendEmail(Transfer transfer, string eventName, TenantRegion region, I
 }
 async Task<IResult> SendToCumulus(Transfer transfer, IConfiguration configuration)
 {
-    if (!transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase) &&
-        !transfer.status.Equals(TransferStatus.Expired.ToString(), StringComparison.OrdinalIgnoreCase))
+    if (transfer.transferDirection != (int)TransferDirection.IncomingTransfer ||
+        (!transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase) &&
+        !transfer.status.Equals(TransferStatus.Expired.ToString(), StringComparison.OrdinalIgnoreCase)))
     {
         return Results.Conflict("The transfer is not in 'Complete' or 'Expired' status and cannot be processed.");
     }
