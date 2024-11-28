@@ -144,7 +144,7 @@ app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IConfigur
         description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the US tenant environment."
     ))
     .WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer is not in 'Complete' or 'Expired' status and cannot be processed."))
+    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer cannot be processed because its status is neither 'Complete' nor 'Expired,' or the action is not an incoming transfer."))
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
@@ -177,7 +177,7 @@ app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfigur
         description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the CA tenant environment."
     ))
     .WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer is not in 'Complete' or 'Expired' status and cannot be processed."))
+    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer cannot be processed because its status is neither 'Complete' nor 'Expired,' or the action is not an incoming transfer."))
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
@@ -210,7 +210,7 @@ app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IConfigur
         description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the EU tenant environment."
     ))
     .WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer is not in 'Complete' or 'Expired' status and cannot be processed."))
+    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer cannot be processed because its status is neither 'Complete' nor 'Expired,' or the action is not an incoming transfer."))
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
@@ -287,7 +287,7 @@ async Task<IResult> SendToCumulus(Transfer transfer, IConfiguration configuratio
         (!transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase) &&
         !transfer.status.Equals(TransferStatus.Expired.ToString(), StringComparison.OrdinalIgnoreCase)))
     {
-        return Results.Conflict("The transfer is not in 'Complete' or 'Expired' status and cannot be processed.");
+        return Results.Conflict("The transfer cannot be processed because its status is neither 'Complete' nor 'Expired,' or the action is not an incoming transfer.");
     }
 
     var httpClient = new HttpClient();
