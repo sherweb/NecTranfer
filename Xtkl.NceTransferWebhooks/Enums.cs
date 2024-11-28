@@ -16,3 +16,10 @@ enum TransferType
 {
     NewCommerce = 3
 }
+
+enum TransferDirection
+{
+    IncomingTransfer = 1,
+    OutgoingTransfer = 2,
+}
+
