@@ -266,6 +266,7 @@ async Task SendEmail(Transfer transfer, string eventName, string imported, Tenan
                             <li><strong>Complete Time:</strong> {transfer.completedTime}</li>
                             <li><strong>Expired Time:</strong> {transfer.expirationTime}</li>
                             <li><strong>Status:</strong> {transfer.status}</li>
+                            <li><strong>Direction:</strong> {transfer.transferDirection}</li>
                             <li><strong>Was imported:</strong> {imported}</li>
                         </ul>
 
