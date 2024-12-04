@@ -31,7 +31,7 @@ namespace Xtkl.NceTransferWebhooks.DTOs
         public string CustomerName { get; init; }
 
         [JsonRequired]
-        [SwaggerSchema("A GUID formatted Org ID that identifies the customer in CUmulus.")]
-        public Guid CumulusOrgId { get; init; }
+        [SwaggerSchema("A organization unique name in Cumulus.")]
+        public string CumulusOrganizationUniqueName { get; init; }
     }
 }
