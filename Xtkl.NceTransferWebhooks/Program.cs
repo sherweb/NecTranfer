@@ -87,7 +87,7 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
             SourcePartnerName = request.PartnerName,
             CustomerEmailId = request.CustomerEmail,
             request.CustomerName,
-            TargetPartnerEmailId = request.CumulusOrganizationUniqueName,
+            TargetPartnerEmailId = request.CumulusOrganizationUniqueName,// hack
             TransferType = TransferType.NewCommerce.GetHashCode()
         };
 
@@ -97,7 +97,7 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
 
         if (!response.IsSuccessStatusCode)
         {
-            logger.LogWarning($"Method: create-transfer -- Customer Id: {request.TenantId} -- Cumulus Unique name: {request.CumulusOrganizationUniqueName} -- Partner Id: {request.PartnerId} -- Error: Not Created", request);
+            logger.LogError($"Method: create-transfer -- Customer Id: {request.TenantId} -- Cumulus Unique name: {request.CumulusOrganizationUniqueName} -- Partner Id: {request.PartnerId} -- Error: Not Created", request);
 
             return Results.Problem(
                 detail: "Internal server error - unexpected error occurred",
@@ -108,7 +108,7 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
         var result = await response.Content.ReadAsStringAsync();
         var transfer = JsonSerializer.Deserialize<Transfer>(result);
 
-        logger.LogInformation($"Method: create-transfer -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
+        logger.LogWarning($"Method: create-transfer -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
         return Results.Ok(new { TransferID = transfer.id, CustomerID = transfer.customerTenantId, CustomerName = transfer.customerName });
     }
     catch (Exception ex)
@@ -133,11 +133,9 @@ app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IAdminPor
 
     try
     {
-        logger.LogInformation("US Transfer:", transfer);
+        logger.LogWarning($"US Transfer: {transfer}");
 
-        var transferImported = ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
-
-        await SendEmail(transfer, request.EventName, transferImported, TenantRegion.US, config);
+        ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
 
         return await SendToFrontdesk(transfer, request.EventName, config, logger);
     }
@@ -163,9 +161,9 @@ app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IAdminPor
 
     try
     {
-        var transferImported = ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
+        logger.LogWarning($"CA Transfer: {transfer}");
 
-        await SendEmail(transfer, request.EventName, transferImported, TenantRegion.CA, config);
+        ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
 
         return await SendToFrontdesk(transfer, request.EventName, config, logger);
     }
@@ -191,9 +189,9 @@ app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IAdminPor
 
     try
     {
-        var transferImported = ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
+        logger.LogWarning($"EU Transfer: {transfer}");
 
-        await SendEmail(transfer, request.EventName, transferImported, TenantRegion.EU, config);
+        ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
 
         return await SendToFrontdesk(transfer, request.EventName, config, logger);
     }
@@ -309,7 +307,7 @@ async Task<IResult> SendToFrontdesk(Transfer transfer, string transferEventName,
 
     if (httpResponse.IsSuccessStatusCode)
     {
-        logger.LogInformation($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
+        logger.LogWarning($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
         Results.Ok("Notification processed successfully");
     }
 
@@ -379,28 +377,34 @@ async Task<IPartnerCredentials> GetPartnerCredentials(TenantRegion region, IConf
 
     return await PartnerCredentials.Instance.GenerateByUserCredentialsAsync(clientId, authToken);
 }
-string ImportTransferToCumulus(string transferEventName, Transfer transfer, IAdminPortalFacade adminFacade, ILogger<Program> logger)
+void ImportTransferToCumulus(string transferEventName, Transfer transfer, IAdminPortalFacade adminFacade, ILogger<Program> logger)
 {
-    if (transfer.transferDirection == (int)TransferDirection.IncomingTransfer &&
-        transferEventName.Equals(TransferEventType.CompleteTransfer.ToTransferEventString(), StringComparison.OrdinalIgnoreCase) &&
-        transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase))
+    try
     {
-
-        var transferResult = adminFacade.ImportMicrosoftTransferInUsingUniqueId(transfer.targetPartnerEmailId);
-
-        if (!transferResult.IsSuccess)
+        if (transfer.transferDirection == (int)TransferDirection.IncomingTransfer &&
+            transferEventName.Equals(TransferEventType.CompleteTransfer.ToTransferEventString(), StringComparison.OrdinalIgnoreCase) &&
+            transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase))
         {
-            logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {transferResult.Error}");
-            return "No";
+
+            var transferResult = adminFacade.ImportMicrosoftTransferInUsingUniqueId(transfer.targetPartnerEmailId);//OrgUnique
+
+            if (!transferResult.IsSuccess)
+            {
+                logger.LogError($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {transferResult.Error}");
+                return;
+            }
+
+            logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
+
+            return;
         }
-
-        logger.LogInformation($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
-
-        return "Yes";
     }
-
-    logger.LogInformation($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Not to be imported");
-    return "No";
+    catch (Exception ex)
+    {
+        logger.LogError($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: {ex.Message}");
+    }
+   
+    logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Not to be imported");
 }
 #endregion
 
