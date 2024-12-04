@@ -11,16 +11,18 @@ using System.Text.Json.Serialization;
 using Xtkl.NceTransferWebhooks.DTOs;
 using Xtkl.NceTransferWebhooks.Model;
 using Microsoft.Extensions.Caching.Memory;
-//using Xtkl.Apps.Legacy.Services.Client.Inspectors;
-//using Xtkl.Apps.Legacy.Services.Client;
-//using Xtkl.Apps.Legacy.Services.Contracts.AdminPortal;
-
+using Xtkl.Apps.Legacy.Services.Client.Inspectors;
+using Xtkl.Apps.Legacy.Services.Client;
+using Xtkl.Apps.Legacy.Services.Contracts.AdminPortal;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.SetMinimumLevel(LogLevel.Debug);
+
+builder.Services.AddApplicationInsightsTelemetry();
+builder.Logging.AddApplicationInsights();
 
 builder.Services.AddMemoryCache();
 
@@ -35,25 +37,25 @@ builder.Services.Configure<JsonOptions>(options =>
     options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
 });
 
-//var serviceConfig = builder.Configuration.GetSection("Transfer:ImportService");
+var serviceConfig = builder.Configuration.GetSection("Transfer:ImportService");
 
-//builder.Services.AddScoped<IAdminPortalFacade>(provider =>
-//{
-//    var identityResolver = provider.GetService<IIdentityResolver>();
-//    var correlationResolver = provider.GetService<ICorrelationResolver>();
+builder.Services.AddScoped<IAdminPortalFacade>(provider =>
+{
+    var identityResolver = provider.GetService<IIdentityResolver>();
+    var correlationResolver = provider.GetService<ICorrelationResolver>();
 
-//    var baseUrl = serviceConfig["Url"];
-//    var username = serviceConfig["Username"];
-//    var password = serviceConfig["Password"];
+    var baseUrl = serviceConfig["Url"];
+    var username = serviceConfig["Username"];
+    var password = serviceConfig["Password"];
 
-//    return LegacyServicesFactory.GetAdminPortalFacadeChannel(
-//        baseUrl,
-//        username,
-//        password,
-//        identityResolver,
-//        correlationResolver
-//    );
-//});
+    return LegacyServicesFactory.GetAdminPortalFacadeChannel(
+        baseUrl,
+        username,
+        password,
+        identityResolver,
+        correlationResolver
+    );
+});
 
 var app = builder.Build();
 
@@ -62,112 +64,114 @@ app.UseSwaggerUI();
 
 app.UseHttpsRedirection();
 
-app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration config, IMemoryCache memoryCache) =>
+app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration config, IMemoryCache memoryCache, ILogger<Program> logger) =>
+{
+    if (request.TenantId == Guid.Empty || request.PartnerId == Guid.Empty || string.IsNullOrEmpty(request.CumulusOrganizationUniqueName) ||
+        string.IsNullOrEmpty(request.CustomerEmail) || string.IsNullOrEmpty(request.PartnerName) ||
+        string.IsNullOrEmpty(request.CustomerName))
     {
-        if (request.TenantId == Guid.Empty || request.PartnerId == Guid.Empty || request.CumulusOrgId == Guid.Empty ||
-            string.IsNullOrEmpty(request.CustomerEmail) || string.IsNullOrEmpty(request.PartnerName) ||
-            string.IsNullOrEmpty(request.CustomerName))
+        return Results.Ok("'TenantId', 'PartnerId', 'PartnerName', 'CustomerName', 'CustomerEmailId', 'CumulusOrganizationUniqueName' are required.");
+    }
+
+    try
+    {
+        var partnerCredentials = await GetPartnerCredentials(request.TenantRegion, config, memoryCache);
+
+        var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", partnerCredentials.PartnerServiceToken);
+        httpClient.BaseAddress = new Uri(config["Transfer:PartnerCenterUrl"]);
+
+        var TransferRequest = new
         {
-            return Results.Ok("'TenantId', 'PartnerId', 'PartnerName', 'CustomerName', 'CustomerEmailId', 'CumulusOrgId' are required.");
+            SourcePartnerTenantId = request.PartnerId,
+            SourcePartnerName = request.PartnerName,
+            CustomerEmailId = request.CustomerEmail,
+            request.CustomerName,
+            TargetPartnerEmailId = request.CumulusOrganizationUniqueName,
+            TransferType = TransferType.NewCommerce.GetHashCode()
+        };
+
+        var content = new StringContent(JsonSerializer.Serialize(TransferRequest), Encoding.UTF8, "application/json");
+
+        var response = await httpClient.PostAsync($"v1/customers/{request.TenantId}/transfers", content);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            logger.LogWarning($"Method: create-transfer -- Customer Id: {request.TenantId} -- Cumulus Unique name: {request.CumulusOrganizationUniqueName} -- Partner Id: {request.PartnerId} -- Error: Not Created", request);
+
+            return Results.Problem(
+                detail: "Internal server error - unexpected error occurred",
+                statusCode: (int)response.StatusCode
+            );
         }
 
-        try
-        {
-            var partnerCredentials = await GetPartnerCredentials(request.TenantRegion, config, memoryCache);
+        var result = await response.Content.ReadAsStringAsync();
+        var transfer = JsonSerializer.Deserialize<Transfer>(result);
 
-            var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", partnerCredentials.PartnerServiceToken);
-            httpClient.BaseAddress = new Uri(config["Transfer:PartnerCenterUrl"]);
-
-            var TransferRequest = new
-            {
-                SourcePartnerTenantId = request.PartnerId,
-                SourcePartnerName = request.PartnerName,
-                CustomerEmailId = request.CustomerEmail,
-                request.CustomerName,
-                TargetPartnerEmailId = request.CumulusOrgId,
-                TransferType = TransferType.NewCommerce.GetHashCode()
-            };
-
-            var content = new StringContent(JsonSerializer.Serialize(TransferRequest), Encoding.UTF8, "application/json");
-
-            var response = await httpClient.PostAsync($"v1/customers/{request.TenantId}/transfers", content);
-
-            return response.IsSuccessStatusCode
-                ? Results.Ok("Transfer created successfully.")
-                : Results.Problem(
-                    detail: "Internal server error - unexpected error occurred",
-                    statusCode: (int)response.StatusCode
-                );
-        }
-        catch (Exception ex)
-        {
-            return Results.Problem("Internal server error - unexpected error occurred");
-        }
-    })
-    .WithName("CreateTransfer")
-    .WithMetadata(new SwaggerOperationAttribute(
+        logger.LogInformation($"Method: create-transfer -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
+        return Results.Ok(new { TransferID = transfer.id, CustomerID = transfer.customerTenantId, CustomerName = transfer.customerName });
+    }
+    catch (Exception ex)
+    {
+        logger.LogError($"Method: create-transfer -- Partner Id: {request.PartnerId} -- Customer Id: {request.TenantId} -- Cumulus Org Id: {request.CumulusOrganizationUniqueName} -- Error: {ex}");
+        return Results.Problem("Internal server error - unexpected error occurred");
+    }
+})
+.WithName("CreateTransfer")
+.WithMetadata(new SwaggerOperationAttribute(
         summary: "Creates a new NCE transfer request",
         description: "This endpoint creates a transfer request for a customer's subscription between partners."
     ))
     .WithMetadata(new SwaggerResponseAttribute(200, "Transfer created successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(400, "'TenantId', 'PartnerId', 'PartnerName', 'CustomerName', 'CustomerEmailId', and 'CumulusOrgId' are required"))
+    .WithMetadata(new SwaggerResponseAttribute(400, "'TenantId', 'PartnerId', 'PartnerName', 'CustomerName', 'CustomerEmailId', and 'CumulusOrganizationUniqueName' are required"))
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
-    {
-        try
-        {
-            var transfer = await GetTransfer(request.AuditUri, TenantRegion.US, config, memoryCache);
-
-            // TO DO: Refactor it after tests
-            var wasImported = "No";
-            //if (transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase))
-            //{
-            //    var transferResult = adminFacade.ImportMicrosoftTransferInUsingUniqueId(transfer.targetPartnerEmailId);
-            //    wasImported = transferResult.IsSuccess ? "Yes" : "No";
-            //}
-
-            await SendEmail(transfer, request.EventName, wasImported, TenantRegion.US, config);
-
-            return await SendToCumulus(transfer, config);
-        }
-        catch (Exception ex)
-        {
-            return Results.Problem($"Error: {ex.Message}");
-        }
-    })
-    .WithName("TransferWebhookUsa")
-    .WithMetadata(new SwaggerOperationAttribute(
-        summary: "This event is raised when the transfer is complete",
-        description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the US tenant environment."
-    ))
-    .WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer is not in 'Complete' or 'Expired' status and cannot be processed."))
-    .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
-    .WithOpenApi();
-
-app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
+app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IAdminPortalFacade adminFacade, IConfiguration config, IMemoryCache memoryCache, ILogger<Program> logger) =>
 {
+    var transfer = await GetTransfer(request.AuditUri, TenantRegion.US, config, memoryCache);
+
     try
     {
-        var transfer = await GetTransfer(request.AuditUri, TenantRegion.CA, config, memoryCache);
+        logger.LogInformation("US Transfer:", transfer);
 
-        // TO DO: Refactor it after tests
-        var wasImported = "No";
-        //if (transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase))
-        //{
-        //    var transferResult = adminFacade.ImportMicrosoftTransferInUsingUniqueId(transfer.targetPartnerEmailId);
-        //    wasImported = transferResult.IsSuccess ? "Yes" : "No";
-        //}
+        var transferImported = ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
 
-        await SendEmail(transfer, request.EventName, wasImported, TenantRegion.CA, config);
+        await SendEmail(transfer, request.EventName, transferImported, TenantRegion.US, config);
 
-        return await SendToCumulus(transfer, config);
+        return await SendToFrontdesk(transfer, request.EventName, config, logger);
     }
     catch (Exception ex)
     {
+        logger.LogError($"Method: transfer-webhook-us -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {ex}");
+        return Results.Problem($"Error: {ex.Message}");
+    }
+})
+.WithName("TransferWebhookUsa")
+.WithMetadata(new SwaggerOperationAttribute(
+summary: "This event is raised when the transfer is complete",
+description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the US tenant environment."
+))
+.WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
+    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer cannot be processed because its status is neither 'Complete' nor 'Expired,' or the action is not an incoming transfer."))
+    .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
+    .WithOpenApi();
+
+app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IAdminPortalFacade adminFacade, IConfiguration config, IMemoryCache memoryCache, ILogger<Program> logger) =>
+{
+    var transfer = await GetTransfer(request.AuditUri, TenantRegion.CA, config, memoryCache);
+
+    try
+    {
+        var transferImported = ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
+
+        await SendEmail(transfer, request.EventName, transferImported, TenantRegion.CA, config);
+
+        return await SendToFrontdesk(transfer, request.EventName, config, logger);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError($"Method: transfer-webhook-ca -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {ex}");
         return Results.Problem($"Error: {ex.Message}");
     }
 })
@@ -177,40 +181,35 @@ app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IConfigur
         description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the CA tenant environment."
     ))
     .WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer is not in 'Complete' or 'Expired' status and cannot be processed."))
+    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer cannot be processed because its status is neither 'Complete' nor 'Expired,' or the action is not an incoming transfer."))
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
-app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IConfiguration config, IMemoryCache memoryCache) =>
+app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IAdminPortalFacade adminFacade, IConfiguration config, IMemoryCache memoryCache, ILogger<Program> logger) =>
+{
+    var transfer = await GetTransfer(request.AuditUri, TenantRegion.EU, config, memoryCache);
+
+    try
     {
-        try
-        {
-            var transfer = await GetTransfer(request.AuditUri, TenantRegion.EU, config, memoryCache);
+        var transferImported = ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
 
-            // TO DO: Refactor it after tests
-            var wasImported = "No";
-            //if (transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase))
-            //{
-            //    var transferResult = adminFacade.ImportMicrosoftTransferInUsingUniqueId(transfer.targetPartnerEmailId);
-            //    wasImported = transferResult.IsSuccess ? "Yes" : "No";
-            //}
+        await SendEmail(transfer, request.EventName, transferImported, TenantRegion.EU, config);
 
-            await SendEmail(transfer, request.EventName, wasImported, TenantRegion.EU, config);
-
-            return await SendToCumulus(transfer, config);
-        }
-        catch (Exception ex)
-        {
-            return Results.Problem($"Error: {ex.Message}");
-        }
-    })
+        return await SendToFrontdesk(transfer, request.EventName, config, logger);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError($"Method: transfer-webhook-eu -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {ex}");
+        return Results.Problem($"Error: {ex.Message}");
+    }
+})
     .WithName("TransferWebhookEuropa")
     .WithMetadata(new SwaggerOperationAttribute(
         summary: "This event is raised when the transfer is complete",
         description: "This endpoint receives notifications from the Microsoft Partner Center when an NCE (New Commerce Experience) transfer is completed or expires within the EU tenant environment."
     ))
     .WithMetadata(new SwaggerResponseAttribute(200, "Notification processed successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer is not in 'Complete' or 'Expired' status and cannot be processed."))
+    .WithMetadata(new SwaggerResponseAttribute(409, "The transfer cannot be processed because its status is neither 'Complete' nor 'Expired,' or the action is not an incoming transfer."))
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
@@ -281,26 +280,41 @@ async Task SendEmail(Transfer transfer, string eventName, string imported, Tenan
 
     await client.SendEmailAsync(msg);
 }
-async Task<IResult> SendToCumulus(Transfer transfer, IConfiguration configuration)
+async Task<IResult> SendToFrontdesk(Transfer transfer, string transferEventName, IConfiguration configuration, ILogger<Program> logger)
 {
-    if (transfer.transferDirection != (int)TransferDirection.IncomingTransfer ||
-        (!transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase) &&
-        !transfer.status.Equals(TransferStatus.Expired.ToString(), StringComparison.OrdinalIgnoreCase)))
+    if (transfer.transferDirection != (int)TransferDirection.IncomingTransfer)
     {
-        return Results.Conflict("The transfer is not in 'Complete' or 'Expired' status and cannot be processed.");
+        return Results.Conflict("The transfer cannot be processed because it is not an incoming transfer.");
+    }
+
+    if (!transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase) &&
+        !transfer.status.Equals(TransferStatus.Expired.ToString(), StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Conflict("The transfer cannot be processed because its status is neither 'Complete' nor 'Expired.");
+    }
+
+    if (transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase) &&
+        !transferEventName.Equals(TransferEventType.CompleteTransfer.ToTransferEventString(), StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.Conflict("The transfer cannot be processed because in spite of its status is 'Complete', the transfer event is not completed yet.");
     }
 
     var httpClient = new HttpClient();
 
     var jsonContent = new StringContent(JsonSerializer.Serialize(transfer), Encoding.UTF8, "application/json");
 
-    var endpointUrl = configuration["Transfer:CumulusEndpoint"];
+    var endpointUrl = configuration["Transfer:FrontdeskEndpoint"];
 
     var httpResponse = await httpClient.PostAsync(endpointUrl, jsonContent);
 
-    return httpResponse.IsSuccessStatusCode
-        ? Results.Ok("Notification processed successfully")
-        : Results.Problem("Internal server error - unexpected error occurred");
+    if (httpResponse.IsSuccessStatusCode)
+    {
+        logger.LogInformation($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
+        Results.Ok("Notification processed successfully");
+    }
+
+    logger.LogError($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Not sent to Cumulus");
+    return Results.Problem("Internal server error - unexpected error occurred");
 }
 async Task<IPartnerCredentials> GetPartnerCredentials(TenantRegion region, IConfiguration config, IMemoryCache memoryCache)
 {
@@ -364,6 +378,29 @@ async Task<IPartnerCredentials> GetPartnerCredentials(TenantRegion region, IConf
     memoryCache.Set(cacheKey, authToken);
 
     return await PartnerCredentials.Instance.GenerateByUserCredentialsAsync(clientId, authToken);
+}
+string ImportTransferToCumulus(string transferEventName, Transfer transfer, IAdminPortalFacade adminFacade, ILogger<Program> logger)
+{
+    if (transfer.transferDirection == (int)TransferDirection.IncomingTransfer &&
+        transferEventName.Equals(TransferEventType.CompleteTransfer.ToTransferEventString(), StringComparison.OrdinalIgnoreCase) &&
+        transfer.status.Equals(TransferStatus.Complete.ToString(), StringComparison.OrdinalIgnoreCase))
+    {
+
+        var transferResult = adminFacade.ImportMicrosoftTransferInUsingUniqueId(transfer.targetPartnerEmailId);
+
+        if (!transferResult.IsSuccess)
+        {
+            logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {transferResult.Error}");
+            return "No";
+        }
+
+        logger.LogInformation($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
+
+        return "Yes";
+    }
+
+    logger.LogInformation($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Not to be imported");
+    return "No";
 }
 #endregion
 

@@ -1,5 +1,4 @@
-﻿
-enum TenantRegion
+﻿enum TenantRegion
 {
     US, // United States
     CA, // Canada
@@ -23,3 +22,27 @@ enum TransferDirection
     OutgoingTransfer = 2,
 }
 
+public enum TransferEventType
+{
+    CompleteTransfer,
+    FailTransfer,
+    UpdateTransfer
+}
+
+public static class TransferEventTypeExtensions
+{
+    public static string ToTransferEventString(this TransferEventType eventType)
+    {
+        switch (eventType)
+        {
+            case TransferEventType.CompleteTransfer:
+                return "complete-transfer";
+            case TransferEventType.UpdateTransfer:
+                return "update-transfer";
+            case TransferEventType.FailTransfer:
+                return "fail-transfer";
+            default:
+                throw new ArgumentOutOfRangeException();
+        }
+    }
+}
