@@ -15,12 +15,12 @@ namespace Xtkl.NceTransferWebhooks.DTOs
         public Guid TenantId { get; init; }
 
         [JsonRequired]
-        [SwaggerSchema("A GUID formatted partner ID that identifies the partner initiating the transfer.")]
-        public Guid PartnerId { get; init; }
+        [SwaggerSchema("A GUID formatted partner ID that identifies the losing partner initiating the transfer.")]
+        public Guid LosingPartnerId { get; init; }
 
         [JsonRequired]
-        [SwaggerSchema("The name of the partner's organization initiating the transfer.")]
-        public string PartnerName { get; init; }
+        [SwaggerSchema("The name of the losing partner initiating the transfer.")]
+        public string LosingPartnerName { get; init; }
 
         [JsonRequired]
         [SwaggerSchema("The email of the customer to receive notifications of the transfer creation.")]

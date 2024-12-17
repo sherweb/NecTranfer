@@ -66,11 +66,11 @@ app.UseHttpsRedirection();
 
 app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration config, IMemoryCache memoryCache, ILogger<Program> logger) =>
 {
-    if (request.TenantId == Guid.Empty || request.PartnerId == Guid.Empty || string.IsNullOrEmpty(request.CumulusOrganizationUniqueName) ||
-        string.IsNullOrEmpty(request.CustomerEmail) || string.IsNullOrEmpty(request.PartnerName) ||
+    if (request.TenantId == Guid.Empty || request.LosingPartnerId == Guid.Empty || string.IsNullOrEmpty(request.CumulusOrganizationUniqueName) ||
+        string.IsNullOrEmpty(request.CustomerEmail) || string.IsNullOrEmpty(request.LosingPartnerName) ||
         string.IsNullOrEmpty(request.CustomerName))
     {
-        return Results.Ok("'TenantId', 'PartnerId', 'PartnerName', 'CustomerName', 'CustomerEmailId', 'CumulusOrganizationUniqueName' are required.");
+        return Results.Ok("'TenantId', 'LosingPartnerId', 'LosingPartnerName', 'CustomerName', 'CustomerEmailId', 'CumulusOrganizationUniqueName' are required.");
     }
 
     try
@@ -83,8 +83,8 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
 
         var TransferRequest = new
         {
-            SourcePartnerTenantId = request.PartnerId,
-            SourcePartnerName = request.PartnerName,
+            SourcePartnerTenantId = request.LosingPartnerId,
+            SourcePartnerName = request.LosingPartnerName,
             CustomerEmailId = request.CustomerEmail,
             request.CustomerName,
             TargetPartnerEmailId = request.CumulusOrganizationUniqueName,// hack
@@ -97,7 +97,7 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
 
         if (!response.IsSuccessStatusCode)
         {
-            logger.LogError($"Method: create-transfer -- Customer Id: {request.TenantId} -- Cumulus Unique name: {request.CumulusOrganizationUniqueName} -- Partner Id: {request.PartnerId} -- Error: Not Created", request);
+            logger.LogError($"Method: create-transfer -- Customer Id: {request.TenantId} -- Cumulus Unique name: {request.CumulusOrganizationUniqueName} -- Losing Partner Id: {request.LosingPartnerId} -- Error: Not Created", request);
 
             return Results.Problem(
                 detail: "Internal server error - unexpected error occurred",
@@ -108,12 +108,12 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
         var result = await response.Content.ReadAsStringAsync();
         var transfer = JsonSerializer.Deserialize<Transfer>(result);
 
-        logger.LogWarning($"Method: create-transfer -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
+        logger.LogWarning($"Method: create-transfer -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: Success");
         return Results.Ok(new { TransferID = transfer.id, CustomerID = transfer.customerTenantId, CustomerName = transfer.customerName });
     }
     catch (Exception ex)
     {
-        logger.LogError($"Method: create-transfer -- Partner Id: {request.PartnerId} -- Customer Id: {request.TenantId} -- Cumulus Org Id: {request.CumulusOrganizationUniqueName} -- Error: {ex}");
+        logger.LogError($"Method: create-transfer -- Losing Partner Id: {request.LosingPartnerId} -- Customer Id: {request.TenantId} -- Cumulus Unique Name: {request.CumulusOrganizationUniqueName} -- Error: {ex}");
         return Results.Problem("Internal server error - unexpected error occurred");
     }
 })
@@ -123,7 +123,7 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
         description: "This endpoint creates a transfer request for a customer's subscription between partners."
     ))
     .WithMetadata(new SwaggerResponseAttribute(200, "Transfer created successfully"))
-    .WithMetadata(new SwaggerResponseAttribute(400, "'TenantId', 'PartnerId', 'PartnerName', 'CustomerName', 'CustomerEmailId', and 'CumulusOrganizationUniqueName' are required"))
+    .WithMetadata(new SwaggerResponseAttribute(400, "'TenantId', 'LosingPartnerId', 'LosingPartnerName', 'CustomerName', 'CustomerEmailId', and 'CumulusOrganizationUniqueName' are required"))
     .WithMetadata(new SwaggerResponseAttribute(500, "Internal server error - unexpected error occurred"))
     .WithOpenApi();
 
@@ -131,17 +131,17 @@ app.MapPost("/transfer-webhook-us", async (TransferWebhookDto request, IAdminPor
 {
     var transfer = await GetTransfer(request.AuditUri, TenantRegion.US, config, memoryCache);
 
+    logger.LogWarning($"US Transfer: {transfer}");
+
+    ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
+
     try
     {
-        logger.LogWarning($"US Transfer: {transfer}");
-
-        ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
-
         return await SendToFrontdesk(transfer, request.EventName, config, logger);
     }
     catch (Exception ex)
     {
-        logger.LogError($"Method: transfer-webhook-us -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {ex}");
+        logger.LogError($"Method: transfer-webhook-us -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Error: {ex}");
         return Results.Problem($"Error: {ex.Message}");
     }
 })
@@ -159,17 +159,17 @@ app.MapPost("/transfer-webhook-ca", async (TransferWebhookDto request, IAdminPor
 {
     var transfer = await GetTransfer(request.AuditUri, TenantRegion.CA, config, memoryCache);
 
+    logger.LogWarning($"CA Transfer: {transfer}");
+
+    ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
+
     try
     {
-        logger.LogWarning($"CA Transfer: {transfer}");
-
-        ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
-
         return await SendToFrontdesk(transfer, request.EventName, config, logger);
     }
     catch (Exception ex)
     {
-        logger.LogError($"Method: transfer-webhook-ca -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {ex}");
+        logger.LogError($"Method: transfer-webhook-ca -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Error: {ex}");
         return Results.Problem($"Error: {ex.Message}");
     }
 })
@@ -187,17 +187,17 @@ app.MapPost("/transfer-webhook-eu", async (TransferWebhookDto request, IAdminPor
 {
     var transfer = await GetTransfer(request.AuditUri, TenantRegion.EU, config, memoryCache);
 
+    logger.LogWarning($"EU Transfer: {transfer}");
+
+    ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
+
     try
     {
-        logger.LogWarning($"EU Transfer: {transfer}");
-
-        ImportTransferToCumulus(request.EventName, transfer, adminFacade, logger);
-
         return await SendToFrontdesk(transfer, request.EventName, config, logger);
     }
     catch (Exception ex)
     {
-        logger.LogError($"Method: transfer-webhook-eu -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {ex}");
+        logger.LogError($"Method: transfer-webhook-eu -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Error: {ex}");
         return Results.Problem($"Error: {ex.Message}");
     }
 })
@@ -227,6 +227,9 @@ async Task<Transfer> GetTransfer(string url, TenantRegion region, IConfiguration
 
     var customerId = parts.GetValue(1).ToString();
     var transferId = parts.GetValue(2).ToString();
+
+    //string customerId = "2b736cc8-3292-41c1-851e-410a6e233718";
+    //string transferId = "60e047a4-b2d7-41dd-92a0-ec8988c1bddc";
 
     var response = await httpClient.GetAsync($"v1/customers/{customerId}/transfers/{transferId}");
 
@@ -307,11 +310,11 @@ async Task<IResult> SendToFrontdesk(Transfer transfer, string transferEventName,
 
     if (httpResponse.IsSuccessStatusCode)
     {
-        logger.LogWarning($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
+        logger.LogWarning($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: Success");
         Results.Ok("Notification processed successfully");
     }
 
-    logger.LogError($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Not sent to Cumulus");
+    logger.LogError($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: Not sent to Cumulus");
     return Results.Problem("Internal server error - unexpected error occurred");
 }
 async Task<IPartnerCredentials> GetPartnerCredentials(TenantRegion region, IConfiguration config, IMemoryCache memoryCache)
@@ -390,21 +393,21 @@ void ImportTransferToCumulus(string transferEventName, Transfer transfer, IAdmin
 
             if (!transferResult.IsSuccess)
             {
-                logger.LogError($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Error: {transferResult.Error}");
+                logger.LogError($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Error: {transferResult.Error}");
                 return;
             }
 
-            logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Success");
+            logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: Success");
 
             return;
         }
     }
     catch (Exception ex)
     {
-        logger.LogError($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: {ex.Message}");
+        logger.LogError($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: {ex.Message}");
     }
    
-    logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Org Id: {transfer.targetPartnerEmailId} -- Message: Not to be imported");
+    logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: Not to be imported");
 }
 #endregion
 
