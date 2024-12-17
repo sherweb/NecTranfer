@@ -1,4 +1,6 @@
-﻿namespace Xtkl.NceTransferWebhooks.Model
+﻿using Xtkl.Apps.Legacy.Services.Contracts.AdminPortal.Tools.MicrosoftTransferIn;
+
+namespace Xtkl.NceTransferWebhooks.Model
 {
     record Transfer(
         string id,
@@ -19,7 +21,10 @@
         string targetPartnerEmailId,
         int transferDirection,
         bool ignoreEligibilityCheck,
-        string lastModifiedUser
+        string lastModifiedUser,
+        string importResult,
+        TransferInSubscription[] successfulSubscriptions,
+        TransferInSubscription[] notTransferredSubscriptions
     );
 
 }
