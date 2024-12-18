@@ -311,7 +311,7 @@ async Task<IResult> SendToFrontdesk(Transfer transfer, string transferEventName,
     if (httpResponse.IsSuccessStatusCode)
     {
         logger.LogWarning($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: Success");
-        Results.Ok("Notification processed successfully");
+        return Results.Ok("Notification processed successfully");
     }
 
     logger.LogError($"Method: SendToFrontdesk -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: Not sent to Cumulus");
