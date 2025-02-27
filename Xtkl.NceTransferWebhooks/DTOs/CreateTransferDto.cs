@@ -15,6 +15,10 @@ namespace Xtkl.NceTransferWebhooks.DTOs
         public Guid TenantId { get; init; }
 
         [JsonRequired]
+        [SwaggerSchema("A string ID that identifies a unique identifier assigned to a company that is a partner with Microsoft.")]
+        public string MpnId { get; init; }
+
+        [JsonRequired]
         [SwaggerSchema("A GUID formatted partner ID that identifies the losing partner initiating the transfer.")]
         public Guid LosingPartnerId { get; init; }
 
