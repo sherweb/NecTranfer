@@ -68,9 +68,9 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
 {
     if (request.TenantId == Guid.Empty || request.LosingPartnerId == Guid.Empty || string.IsNullOrEmpty(request.CumulusOrganizationUniqueName) ||
         string.IsNullOrEmpty(request.CustomerEmail) || string.IsNullOrEmpty(request.LosingPartnerName) ||
-        string.IsNullOrEmpty(request.CustomerName))
+        string.IsNullOrEmpty(request.CustomerName) || string.IsNullOrEmpty(request.MpnId))
     {
-        return Results.Ok("'TenantId', 'LosingPartnerId', 'LosingPartnerName', 'CustomerName', 'CustomerEmailId', 'CumulusOrganizationUniqueName' are required.");
+        return Results.BadRequest("'TenantId', 'LosingPartnerId', 'LosingPartnerName', 'CustomerName', 'CustomerEmailId', 'MpnId', 'CumulusOrganizationUniqueName' are required.");
     }
 
     try
@@ -84,11 +84,20 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
         var TransferRequest = new
         {
             SourcePartnerTenantId = request.LosingPartnerId,
-            SourcePartnerName = request.LosingPartnerName,
-            CustomerEmailId = request.CustomerEmail,
-            request.CustomerName,
-            TargetPartnerEmailId = request.CumulusOrganizationUniqueName,// hack
-            TransferType = TransferType.NewCommerce.GetHashCode()
+            SourcePartnerName = request.LosingPartnerName.Trim(),
+            CustomerEmailId = request.CustomerEmail.Trim(),
+            CustomerName  = request.CustomerName.Trim(),
+            TargetPartnerEmailId = request.CumulusOrganizationUniqueName.Trim(),// hack
+            TransferType = TransferType.NewCommerce.GetHashCode(),
+            Participants = 
+                new[]
+                { 
+                    new
+                    {
+                        Key = "TransactionReseller",
+                        Value = request.MpnId.Trim()
+                    }
+                }
         };
 
         var content = new StringContent(JsonSerializer.Serialize(TransferRequest), Encoding.UTF8, "application/json");
@@ -357,6 +366,12 @@ async Task<IPartnerCredentials> GetPartnerCredentials(TenantRegion region, IConf
     using (var client = new HttpClient())
     {
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/x-www-form-urlencoded"));
+        client.DefaultRequestHeaders.CacheControl = new CacheControlHeaderValue
+        {
+            NoCache = true,
+            NoStore = true,
+            MustRevalidate = true
+        };
 
         var content = new FormUrlEncodedContent(postData);
         var response = await client.PostAsync(url, content);
@@ -398,14 +413,14 @@ Transfer ImportTransferToCumulus(string transferEventName, Transfer transfer, IA
             }
 
             logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: Success");
-            return transfer with { importResult = "Success", successfulSubscriptions = transferResult.SuccessfulSubscriptions, notTransferredSubscriptions = transferResult.NotTransferredSubscriptions};
+            return transfer with { importResult = "Success", successfulSubscriptions = transferResult.SuccessfulSubscriptions, notTransferredSubscriptions = transferResult.NotTransferredSubscriptions };
         }
     }
     catch (Exception ex)
     {
         logger.LogError($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: {ex.Message}");
     }
-   
+
     logger.LogWarning($"Method: ImportTransferToCumulus -- Transfer Id: {transfer.id} -- Customer Id: {transfer.customerTenantId} -- Cumulus Unique Name: {transfer.targetPartnerEmailId} -- Message: Not to be imported");
     return transfer with { importResult = "Not a case to be imported" };
 }
