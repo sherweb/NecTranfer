@@ -68,9 +68,9 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
 {
     if (request.TenantId == Guid.Empty || request.LosingPartnerId == Guid.Empty || string.IsNullOrEmpty(request.CumulusOrganizationUniqueName) ||
         string.IsNullOrEmpty(request.CustomerEmail) || string.IsNullOrEmpty(request.LosingPartnerName) ||
-        string.IsNullOrEmpty(request.CustomerName) || string.IsNullOrEmpty(request.MpnId))
+        string.IsNullOrEmpty(request.CustomerName))
     {
-        return Results.BadRequest("'TenantId', 'LosingPartnerId', 'LosingPartnerName', 'CustomerName', 'CustomerEmailId', 'MpnId', 'CumulusOrganizationUniqueName' are required.");
+        return Results.BadRequest("'TenantId', 'LosingPartnerId', 'LosingPartnerName', 'CustomerName', 'CustomerEmailId', 'CumulusOrganizationUniqueName' are required.");
     }
 
     try
@@ -81,7 +81,18 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", partnerCredentials.PartnerServiceToken);
         httpClient.BaseAddress = new Uri(config["Transfer:PartnerCenterUrl"]);
 
-        var TransferRequest = new
+        var participants = !string.IsNullOrEmpty(request.MpnId?.Trim())
+            ? new[]
+                {
+                    new
+                    {
+                        Key = "TransactionReseller",
+                        Value = request.MpnId.Trim()
+                    }
+                }
+            : null;
+
+        var transferRequest = new
         {
             SourcePartnerTenantId = request.LosingPartnerId,
             SourcePartnerName = request.LosingPartnerName.Trim(),
@@ -89,18 +100,10 @@ app.MapPost("/create-transfer", async (CreateTransferDto request, IConfiguration
             CustomerName  = request.CustomerName.Trim(),
             TargetPartnerEmailId = request.CumulusOrganizationUniqueName.Trim(),// hack
             TransferType = TransferType.NewCommerce.GetHashCode(),
-            Participants = 
-                new[]
-                { 
-                    new
-                    {
-                        Key = "TransactionReseller",
-                        Value = request.MpnId.Trim()
-                    }
-                }
+            Participants = participants
         };
 
-        var content = new StringContent(JsonSerializer.Serialize(TransferRequest), Encoding.UTF8, "application/json");
+        var content = new StringContent(JsonSerializer.Serialize(transferRequest), Encoding.UTF8, "application/json");
 
         var response = await httpClient.PostAsync($"v1/customers/{request.TenantId}/transfers", content);
 
